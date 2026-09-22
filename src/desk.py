@@ -374,13 +374,15 @@ class TradingDesk:
 
     # -- exit loop --------------------------------------------------------------------
 
-    async def refresh_positions(self) -> list[Position]:
+    async def refresh_positions(self, *, required: bool = False) -> list[Position]:
         """Merge broker truth into our view. Crypto stays desk-side while the
         executor is a stub."""
         try:
             live_stocks = await self.stock_executor.get_positions()
         except Exception as exc:  # noqa: BLE001 - a broker hiccup must not clear the book
             log.warning("could not refresh stock positions: %s", exc)
+            if required:
+                raise RuntimeError("Cannot start trading without broker positions") from exc
             return self.positions
 
         by_symbol = {p.symbol: p for p in self.positions if p.market == Market.STOCKS}
@@ -390,10 +392,13 @@ class TradingDesk:
             if known is not None:
                 known.quantity = live.quantity
                 known.current_price = live.current_price
+                known.entry_price = live.entry_price
+                known.amount_usd = live.amount_usd
                 merged.append(known)
             else:
                 merged.append(live)
         self.positions = merged
+        self.risk.reconcile_positions(self.positions)
         return self.positions
 
     async def manage_position(self, position: Position) -> dict[str, Any]:
@@ -527,6 +532,10 @@ class TradingDesk:
             self.analyst.live_search,
         )
         log.info("outcome memory: %d closed trades loaded", self.refresh_memory())
+        if not self.dry_run:
+            # Broker truth must be loaded before any entry loop can spend.  A
+            # failed startup refresh prevents every trading loop from starting.
+            await self.refresh_positions(required=True)
         await asyncio.gather(
             self.crypto_loop(),
             self.stock_loop(),
