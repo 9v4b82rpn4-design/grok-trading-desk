@@ -35,7 +35,7 @@ class RiskManager:
             risk.get("max_position_pct_of_remaining_loss", 0.25)
         )
 
-        self.allocation = Allocation()
+        self.allocation = Allocation().normalized(self.crypto_max_pct, self.stock_max_pct)
         self.realized_pnl_today = 0.0
         self.deployed_usd: dict[Market, float] = {Market.CRYPTO: 0.0, Market.STOCKS: 0.0}
         self.session_date = date.today()
@@ -43,15 +43,33 @@ class RiskManager:
     # -- daily bookkeeping --------------------------------------------------------
 
     def maybe_reset_day(self, today: date | None = None) -> bool:
-        """Zero the daily counters when the date rolls over. Returns True if reset."""
+        """Reset daily PnL when the date rolls over. Returns True if reset.
+
+        Deployed capital is exposure, not a daily counter. Clearing it at
+        midnight lets a long-running desk spend the same budget again while
+        yesterday's positions remain open.
+        """
         today = today or date.today()
         if today == self.session_date:
             return False
         self.session_date = today
         self.realized_pnl_today = 0.0
-        self.deployed_usd = {Market.CRYPTO: 0.0, Market.STOCKS: 0.0}
         log.info("risk: new session %s, daily counters reset", today)
         return True
+
+    def reconcile_positions(self, positions: list[Position]) -> None:
+        """Rebuild exposure from authoritative open positions.
+
+        This is idempotent and is safe to call after every broker refresh.  It
+        prevents a process restart from forgetting capital already at risk.
+        """
+        deployed = {Market.CRYPTO: 0.0, Market.STOCKS: 0.0}
+        for position in positions:
+            amount = max(0.0, float(position.amount_usd or 0.0))
+            if not amount and position.quantity > 0 and position.entry_price > 0:
+                amount = position.quantity * position.entry_price
+            deployed[position.market] += amount
+        self.deployed_usd = deployed
 
     def record_fill(self, market: Market, amount_usd: float) -> None:
         self.deployed_usd[market] = self.deployed_usd.get(market, 0.0) + amount_usd

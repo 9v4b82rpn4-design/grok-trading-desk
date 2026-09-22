@@ -167,15 +167,29 @@ class Allocation(BaseModel):
     decided_at: datetime = Field(default_factory=_utcnow)
 
     def normalized(self, crypto_max_pct: float = 1.0, stock_max_pct: float = 1.0) -> "Allocation":
-        """Clamp to the configured ceilings, then renormalize to sum to 1."""
-        crypto = max(0.0, min(self.crypto_pct, crypto_max_pct))
-        stocks = max(0.0, min(self.stocks_pct, stock_max_pct))
-        total = crypto + stocks
-        if total <= 0:
-            crypto, stocks, total = 0.5, 0.5, 1.0
+        """Project the requested split onto the configured ceilings.
+
+        Clamping and then renormalizing is subtly unsafe: ``(1, 0)`` with a
+        70% crypto ceiling becomes ``(0.7, 0)`` and renormalizes straight back
+        to 100% crypto.  With two markets the bounded projection is simple:
+        normalize the request, cap one side, and assign the remainder to the
+        other side.
+        """
+        crypto_cap = max(0.0, min(float(crypto_max_pct), 1.0))
+        stock_cap = max(0.0, min(float(stock_max_pct), 1.0))
+        if crypto_cap + stock_cap < 1.0 - 1e-12:
+            raise ValueError("allocation ceilings must sum to at least 1.0")
+
+        requested_crypto = max(0.0, float(self.crypto_pct))
+        requested_stocks = max(0.0, float(self.stocks_pct))
+        total = requested_crypto + requested_stocks
+        crypto = requested_crypto / total if total > 0 else 0.5
+        crypto = min(crypto, crypto_cap)
+        crypto = max(crypto, 1.0 - stock_cap)
+        stocks = 1.0 - crypto
         return Allocation(
-            crypto_pct=crypto / total,
-            stocks_pct=stocks / total,
+            crypto_pct=crypto,
+            stocks_pct=stocks,
             reason=self.reason,
             decided_at=self.decided_at,
         )

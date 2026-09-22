@@ -40,12 +40,17 @@ def test_default_allocation_is_even():
 def test_allocation_is_clamped_to_the_ceiling():
     r = rm()
     r.set_allocation(Allocation(crypto_pct=1.0, stocks_pct=0.0))
-    # crypto_max_pct=0.7, stocks clamp to 0 -> renormalized back to 1.0 crypto
-    assert r.allocation.crypto_pct == pytest.approx(1.0)
+    assert r.allocation.crypto_pct == pytest.approx(0.7)
+    assert r.allocation.stocks_pct == pytest.approx(0.3)
 
     r.set_allocation(Allocation(crypto_pct=0.9, stocks_pct=0.1))
-    assert r.allocation.crypto_pct == pytest.approx(0.7 / 0.8)
-    assert r.market_budget(Market.CRYPTO) == pytest.approx(2000 * 0.7 / 0.8)
+    assert r.allocation.crypto_pct == pytest.approx(0.7)
+    assert r.market_budget(Market.CRYPTO) == pytest.approx(1400)
+
+
+def test_impossible_allocation_ceilings_are_rejected():
+    with pytest.raises(ValueError, match="sum to at least"):
+        Allocation(crypto_pct=0.5, stocks_pct=0.5).normalized(0.4, 0.4)
 
 
 def test_allocation_shifts_the_budgets():
@@ -120,7 +125,7 @@ def test_profits_do_not_inflate_the_loss_room():
     assert r.remaining_loss_room() == pytest.approx(300.0)
 
 
-def test_daily_reset_clears_pnl_and_deployment():
+def test_daily_reset_clears_pnl_but_preserves_open_exposure():
     r = rm()
     r.record_close(Market.CRYPTO, -290.0)
     r.record_fill(Market.CRYPTO, 400.0)
@@ -128,7 +133,7 @@ def test_daily_reset_clears_pnl_and_deployment():
 
     assert r.maybe_reset_day(date.today() + timedelta(days=1)) is True
     assert r.realized_pnl_today == 0.0
-    assert r.deployed_usd[Market.CRYPTO] == 0.0
+    assert r.deployed_usd[Market.CRYPTO] == 400.0
     assert r.can_open(Market.CRYPTO, [])[0] is True
 
 
@@ -155,6 +160,18 @@ def test_close_returns_budget_and_records_pnl():
     r.record_close(Market.CRYPTO, 40.0, amount_usd=500.0)
     assert r.deployed_usd[Market.CRYPTO] == 0.0
     assert r.realized_pnl_today == pytest.approx(40.0)
+
+
+def test_reconcile_positions_restores_exposure_after_restart():
+    r = rm()
+    positions = [
+        Position(market=Market.CRYPTO, symbol="C", quantity=10, entry_price=3),
+        Position(market=Market.STOCKS, symbol="S", quantity=2, entry_price=50,
+                 amount_usd=95),
+    ]
+    r.reconcile_positions(positions)
+    assert r.deployed_usd[Market.CRYPTO] == pytest.approx(30)
+    assert r.deployed_usd[Market.STOCKS] == pytest.approx(95)
 
 
 # --- position sizing --------------------------------------------------------------
@@ -200,13 +217,10 @@ def test_position_size_is_zero_when_the_day_is_blown():
 def test_position_size_follows_the_allocation():
     r = rm()
     r.set_allocation(Allocation(crypto_pct=0.2, stocks_pct=0.8))
-    # stocks clamp at the 0.7 ceiling, so the split renormalizes to 0.2/0.9 crypto
-    assert r.allocation.crypto_pct == pytest.approx(0.2 / 0.9)
-    crypto_budget = 2000 * 0.2 / 0.9
-    # 15% of that budget (~66.7) is now tighter than the 75 loss-room bound
-    assert r.position_size(Market.CRYPTO, score=1.0) == pytest.approx(
-        round(crypto_budget * 0.15, 2)
-    )
+    # The stock ceiling forces at least 30% to crypto.
+    assert r.allocation.crypto_pct == pytest.approx(0.3)
+    # 15% of that budget is 90, so the 75 loss-room bound wins.
+    assert r.position_size(Market.CRYPTO, score=1.0) == pytest.approx(75.0)
 
 
 def test_snapshot_reports_both_books():
