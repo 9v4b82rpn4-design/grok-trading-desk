@@ -169,6 +169,22 @@ async def test_exit_pass_holds_and_logs_an_action(tmp_path):
     assert actions[-1]["action"] == "HOLD"
 
 
+async def test_broker_refresh_reconciles_risk_exposure(tmp_path):
+    desk = build(tmp_path)
+
+    class Broker:
+        paper = True
+
+        async def get_positions(self):
+            return [Position(market=Market.STOCKS, symbol="ACME", quantity=3,
+                             entry_price=40, current_price=42, amount_usd=120)]
+
+    desk.stock_executor = Broker()
+    await desk.refresh_positions()
+    assert desk.risk.deployed_usd[Market.STOCKS] == pytest.approx(120)
+    assert desk.risk.remaining_market_budget(Market.STOCKS) == pytest.approx(880)
+
+
 async def test_memory_reaches_the_checker_but_not_the_analyst(tmp_path):
     desk = build(tmp_path)
     assert desk.crypto_checker.memory is desk.memory
@@ -233,3 +249,29 @@ def test_market_hours_window(tmp_path):
     assert desk.market_is_open(weekday.replace(hour=8, minute=0)) is False
     saturday = datetime(2026, 8, 29, 10, 0, tzinfo=timezone.utc)
     assert desk.market_is_open(saturday) is False
+
+
+async def test_startup_broker_failure_prevents_trading_loops(tmp_path):
+    from unittest.mock import AsyncMock
+    desk = build(tmp_path, dry_run=False)
+    desk.stock_executor.get_positions = AsyncMock(side_effect=RuntimeError("offline"))
+    desk.crypto_loop = AsyncMock()
+    desk.stock_loop = AsyncMock()
+    with pytest.raises(RuntimeError, match="Cannot start trading"):
+        await desk.run()
+    desk.crypto_loop.assert_not_awaited()
+    desk.stock_loop.assert_not_awaited()
+
+
+async def test_refresh_updates_known_position_cost_basis(tmp_path):
+    from unittest.mock import AsyncMock
+    desk = build(tmp_path)
+    desk.positions = [Position(market=Market.STOCKS, symbol="ACME", quantity=10,
+                               entry_price=50, amount_usd=500, sector="technology")]
+    desk.stock_executor.get_positions = AsyncMock(return_value=[
+        Position(market=Market.STOCKS, symbol="ACME", quantity=4,
+                 entry_price=55, amount_usd=220, current_price=60)])
+    await desk.refresh_positions()
+    assert desk.positions[0].sector == "technology"
+    assert desk.positions[0].entry_price == 55
+    assert desk.risk.deployed_usd[Market.STOCKS] == 220
