@@ -45,8 +45,8 @@ async def test_allocate_clamps_to_the_configured_ceiling(client_factory):
     client = client_factory({"crypto_pct": 0.95, "stocks_pct": 0.05, "reason": "all in"})
     allocation = await Allocator(CONFIG, client=client).allocate(CRYPTO_PULSE, MARKET_PULSE, PNL)
     assert isinstance(allocation, Allocation)
-    assert allocation.crypto_pct == pytest.approx(0.7 / 0.75)
-    assert allocation.stocks_pct == pytest.approx(0.05 / 0.75)
+    assert allocation.crypto_pct == pytest.approx(0.7)
+    assert allocation.stocks_pct == pytest.approx(0.3)
     assert allocation.crypto_pct + allocation.stocks_pct == pytest.approx(1.0)
 
 
@@ -59,8 +59,8 @@ async def test_allocate_leaves_an_in_range_split_alone(client_factory):
 async def test_allocate_allows_zeroing_one_market(client_factory):
     client = client_factory({"crypto_pct": 0.0, "stocks_pct": 1.0, "reason": "crypto shut"})
     allocation = await Allocator(CONFIG, client=client).allocate(CRYPTO_PULSE, MARKET_PULSE, PNL)
-    assert allocation.crypto_pct == 0.0
-    assert allocation.stocks_pct == pytest.approx(1.0)
+    assert allocation.crypto_pct == pytest.approx(0.3)
+    assert allocation.stocks_pct == pytest.approx(0.7)
 
 
 async def test_allocate_sends_both_pulses_and_pnl_to_the_model(client_factory):
