@@ -126,8 +126,21 @@ the 48-hour macro calendar. Same `go_signal` contract, same pause threshold.
 **10 · allocator** (`shared/allocator.py`) — Once a day, splits the
 budget between the two markets given both pulses and the trailing week's realised
 PnL per market. Its answer is clamped by `crypto_max_pct` / `stock_max_pct` in
-code, so a runaway model cannot put the whole book on one side. Failure returns
+code without renormalizing past either ceiling, so a runaway model cannot put the
+whole book on one side. Failure returns
 50/50 — no tilt.
+
+At startup and after every successful broker refresh, open Alpaca positions are reconciled
+back into the shared risk budget. Exposure also survives the daily PnL reset, so
+restarting the process or crossing midnight cannot silently free already-deployed
+capital for a second round of entries. A failed startup position fetch stops the
+desk before its trading loops start.
+
+This is a partial risk hardening, not complete broker reconciliation: pending
+orders and broker-side realized PnL are not restored, daily realized PnL is still
+in memory, and order submission is still treated as a fill by the upstream
+executor. Crypto execution remains a stub. Use dry-run for evaluation until
+these execution and accounting gaps are addressed.
 
 **11 · crypto_checker** (`crypto/crypto_checker.py`, **deep model**) — The adversarial
 gate before money moves. Told explicitly to argue the other side and find the way
